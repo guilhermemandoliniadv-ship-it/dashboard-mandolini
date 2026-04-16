@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard Google Sheets</title>
+    <!-- CDN para bibliotecas -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/moment@2.29.4/min/moment.min.js"></script>
+    <script src="https://apis.google.com/js/api.js"></script>
+    <style>
+        /* CSS inline otimizado */
+        body { font-family: Arial, sans-serif; transition: background-color 0.3s, color 0.3s; }
+        .dark-mode { background-color: #121212; color: #ffffff; }
+        .card { margin-bottom: 10px; }
+        .urgencia-critico { background-color: #dc3545; color: white; }
+        .urgencia-semana { background-color: #fd7e14; color: white; }
+        .urgencia-mes { background-color: #ffc107; color: black; }
+        .urgencia-normal { background-color: #28a745; color: white; }
+        .table-responsive { max-height: 400px; overflow-y: auto; }
+        .chart-container { position: relative; height: 300px; width: 100%; }
+        .toggle-theme { position: fixed; top: 10px; right: 10px; z-index: 1000; }
+    </style>
+</head>
+<body>
+    <div class="container-fluid mt-4">
+        <h1 class="text-center">Dashboard de Contratos</h1>
+        <button id="auth-button" class="btn btn-primary">Autenticar com Google</button>
+        <button id="toggle-theme" class="btn btn-secondary toggle-theme">Tema Claro/Escuro</button>
+        <div id="content" style="display: none;">
+            <!-- Cards de urgência -->
+            <div class="row" id="cards-container"></div>
+            <!-- Resumo financeiro -->
+            <div class="row mt-4">
+                <div class="col-md-4"><div class="card"><div class="card-body"><h5>Total Contratos</h5><p id="total-contratos">0</p></div></div></div>
+                <div class="col-md-4"><div class="card"><div class="card-body"><h5>Comissão (27%)</h5><p id="comissao">0</p></div></div></div>
+                <div class="col-md-4"><div class="card"><div class="card-body"><h5>Receita</h5><p id="receita">0</p></div></div></div>
+            </div>
+            <!-- Tabela interativa -->
+            <div class="mt-4"><input type="text" id="filter-input" class="form-control" placeholder="Filtrar tabela..."><div class="table-responsive"><table class="table table-striped" id="data-table"><thead><tr><th>Tipo</th><th>Prazo</th><th>Valor</th></tr></thead><tbody></tbody></table></div></div>
+            <!-- Gráficos -->
+            <div class="row mt-4">
+                <div class="col-md-4"><canvas id="chart-prazos"></canvas></div>
+                <div class="col-md-4"><canvas id="chart-tipos"></canvas></div>
+                <div class="col-md-4"><canvas id="chart-comissoes"></canvas></div>
+            </div>
+        </div>
+    </div>
+    <script>
+        // Configurações OAuth
+        const CLIENT_ID = '550452570835-7h5s5sk82ur2t7ktejrlmtq8sp7knc6e.apps.googleusercontent.com';
+        const SPREADSHEET_ID = '1SvzIbadqHsh2S3wpL0_x2_sSMBFr5PMNLkE9Be8L6eE';
+        const API_KEY = AIzaSyCQijmQxgpO5t1Vb2DDXSLeE66_xQHM1C8; // Substitua pela sua API Key (não expor)
+        let isSignedIn = false;
+        let data = [];
+
+        // Inicializar Google API
+        gapi.load('client:auth2', initClient);
+        function initClient() {
+            gapi.client.init({
+                apiKey: API_KEY,
+                clientId: CLIENT_ID,
+                discoveryDocs: ['https://sheets.googleapis.com/$discovery/rest?version=v4'],
+                scope: 'https://www.googleapis.com/auth/spreadsheets.readonly'
+            }).then(() => {
+                gapi.auth2.getAuthInstance().isSignedIn.listen(updateSigninStatus);
+                updateSigninStatus(gapi.auth2.getAuthInstance().isSignedIn.get());
+            });
+        }
+
+        function updateSigninStatus(isSignedIn) {
+            if (isSignedIn) {
+                document.getElementById('auth-button').style.display = 'none';
+                document.getElementById('content').style.display = 'block';
+                loadData();
+            } else {
+                document.getElementById('auth-button').style.display = 'block';
+                document.getElementById('content').style.display = 'none';
+            }
+        }
+
+        document.getElementById('auth-button').addEventListener('click', () => {
+            gapi.auth2.getAuthInstance().signIn();
+        });
+
+        // Carregar dados da planilha
+        async function loadData() {
+            try {
+                const response = await gapi.client.sheets.spreadsheets.values.get({
+                    spreadsheetId: SPREADSHEET_ID,
+                    range: 'Sheet1!A:D' // Ajuste o range conforme necessário
+                });
+                data = response.result.values || [];
+                processData();
+                checkNotifications();
+            } catch (error) {
+                console.error('Erro ao carregar dados:', error);
+            }
+        }
+
+        // Processar dados
+        function processData() {
+            const cardsContainer = document.getElementById('cards-container');
+            cardsContainer.innerHTML = '';
+            let totalContratos = 0;
+            let totalValor = 0;
+            const tipos = {};
+            const prazosPorMes = {};
+            const comissoes = [];
+
+            data.slice(1).forEach(row => { // Assumindo cabeçalho na primeira linha
+                const [tipo, prazo, valor] = row;
+                const prazoDate = moment(prazo, 'DD/MM/YYYY');
+                const diasRestantes = prazoDate.diff(moment(), 'days');
+                let urgenciaClass = 'urgencia-normal';
+                if (diasRestantes < 5) urgenciaClass = 'urgencia-critico';
+                else if (diasRestantes < 7) urgenciaClass = 'urgencia-semana';
+                else if (diasRestantes < 30) urgenciaClass = 'urgencia-mes';
+
+                cardsContainer.innerHTML += `<div class="col-md-3"><div class="card ${urgenciaClass}"><div class="card-body"><h5>${tipo}</h5><p>Prazo: ${prazo}</p><p>Valor: R$ ${valor}</p></div></div></div>`;
+
+                totalContratos++;
+                totalValor += parseFloat(valor.replace(',', '.'));
+                tipos[tipo] = (tipos[tipo] || 0) + 1;
+                const mes = prazoDate.format('MM/YYYY');
+                prazosPorMes[mes] = (prazosPorMes[mes] || 0) + 1;
+                comissoes.push(parseFloat(valor.replace(',', '.')) * 0.27);
+            });
+
+            document.getElementById('total-contratos').textContent = totalContratos;
+            document.getElementById('comissao').textContent = `R$ ${(totalValor * 0.27).toFixed(2)}`;
+            document.getElementById('receita').textContent = `R$ ${totalValor.toFixed(2)}`;
+
+            // Tabela
+            const tableBody = document.querySelector('#data-table tbody');
+            tableBody.innerHTML = data.slice(1).map(row => `<tr><td>${row[0]}</td><td>${row[1]}</td><td>${row[2]}</td></tr>`).join('');
+
+            // Filtro
+            document.getElementById('filter-input').addEventListener('input', (e) => {
+                const filter = e.target.value.toLowerCase();
+                const rows = tableBody.querySelectorAll('tr');
+                rows.forEach(row => {
+                    row.style.display = row.textContent.toLowerCase().includes(filter) ? '' : 'none';
+                });
+            });
+
+            // Gráficos
+            new Chart(document.getElementById('chart-prazos'), {
+                type: 'bar',
+                data: { labels: Object.keys(prazosPorMes), datasets: [{ label: 'Prazos por Mês', data: Object.values(prazosPorMes) }] }
+            });
+            new Chart(document.getElementById('chart-tipos'), {
+                type: 'pie',
+                data: { labels: Object.keys(tipos), datasets: [{ data: Object.values(tipos) }] }
+            });
+            new Chart(document.getElementById('chart-comissoes'), {
+                type: 'line',
+                data: { labels: data.slice(1).map((_, i) => i + 1), datasets: [{ label: 'Comissões', data: comissoes }] }
+            });
+        }
+
+        // Notificações
+        function checkNotifications() {
+            data.slice(1).forEach(row => {
+                const prazoDate = moment(row[1], 'DD/MM/YYYY');
+                if (prazoDate.isBefore(moment())) {
+                    alert(`Prazo vencido para ${row[0]}: ${row[1]}`);
+                }
+            });
+        }
+
+        // Tema escuro/claro
+        document.getElementById('toggle-theme').addEventListener('click', () => {
+            document.body.classList.toggle('dark-mode');
+        });
+
+        // Atualização automática a cada 30 minutos
+        setInterval(loadData, 30 * 60 * 1000);
+    </script>
+</body>
+</html>
